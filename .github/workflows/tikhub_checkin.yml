@@ -1,0 +1,59 @@
+name: TikHub 自动签到
+
+on:
+  # 每天北京时间 8:00 自动运行（UTC 0:00）
+  schedule:
+    - cron: '0 0 * * *'
+  
+  # 支持手动触发
+  workflow_dispatch:
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 检出代码
+      uses: actions/checkout@v4
+    
+    - name: 设置 Python 环境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+    
+    - name: 安装依赖
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        playwright install chromium
+        playwright install-deps chromium
+    
+    - name: 执行签到
+      env:
+        # TikHub 登录配置（二选一）
+        TIKHUB_EMAIL: ${{ secrets.TIKHUB_EMAIL }}
+        TIKHUB_PASSWORD: ${{ secrets.TIKHUB_PASSWORD }}
+        # 或者使用 Cookie
+        # TIKHUB_COOKIE: ${{ secrets.TIKHUB_COOKIE }}
+        
+        # Telegram 通知配置（可选）
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        
+        # 标记为自动运行
+        IS_AUTO_RUN: "true"
+        GITHUB_ACTIONS: "true"
+      run: |
+        python tikhub_signin_playwright.py
+    
+    - name: 上传签到记录
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: checkin-record-${{ github.run_number }}
+        path: |
+          tikhub_checkin_record.json
+          tikhub_cookies.json
+        retention-days: 30
+

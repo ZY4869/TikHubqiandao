@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 TikHub 自动签到脚本
-支持账号密码登录、Cookie自动管理、Telegram通知
+使用 Cookie 方式签到
 """
 
 import asyncio
@@ -26,20 +26,16 @@ def get_beijing_time():
 
 
 class TikHubCheckin:
-    def __init__(self, email: str = None, password: str = None, cookie: str = None):
+    def __init__(self, cookie: str):
         """
         初始化签到类
-        :param email: 登录邮箱
-        :param password: 登录密码
-        :param cookie: 登录后的cookie（可选，如果提供则优先使用）
+        :param cookie: 登录后的cookie字符串
         """
-        self.email = email
-        self.password = password
         self.cookie = cookie
         self.base_url = "https://user.tikhub.io"
         
         # 签到相关属性
-        self.login_method = "未知"
+        self.login_method = "Cookie"
         self.points_gained = ""
         self.last_checkin_result = ""
         self.checkin_method = "Cookie签到"
@@ -55,7 +51,6 @@ class TikHubCheckin:
             app_dir = os.path.dirname(os.path.abspath(__file__))
         
         self.checkin_record_file = os.path.join(app_dir, "tikhub_checkin_record.json")
-        self.cookie_file = os.path.join(app_dir, "tikhub_cookies.json")
     
     def parse_cookie_string(self, cookie_string):
         """将cookie字符串解析为Playwright需要的格式"""
@@ -100,32 +95,10 @@ class TikHubCheckin:
                     user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
                 )
                 
-                # 尝试加载保存的Cookie
-                cookie_loaded = False
-                if os.path.exists(self.cookie_file):
-                    try:
-                        with open(self.cookie_file, 'r', encoding='utf-8') as f:
-                            saved_cookies = json.load(f)
-                        await context.add_cookies(saved_cookies)
-                        print("[步骤 2] 加载已保存的Cookie...")
-                        cookie_loaded = True
-                        self.login_method = "保存的Cookie"
-                    except Exception as e:
-                        print(f"⚠️ 加载Cookie失败: {e}")
-                
-                # 如果没有保存的Cookie，使用提供的Cookie或登录
-                if not cookie_loaded:
-                    if self.cookie:
-                        print("[步骤 2] 使用提供的Cookie...")
-                        cookies = self.parse_cookie_string(self.cookie)
-                        await context.add_cookies(cookies)
-                        self.login_method = "手动Cookie"
-                    elif self.email and self.password:
-                        print("[步骤 2] 使用账号密码登录...")
-                        await self._login_with_credentials(context)
-                        self.login_method = "账号密码"
-                    else:
-                        return {"success": False, "message": "未提供Cookie或账号密码"}
+                # 使用提供的Cookie
+                print("[步骤 2] 注入Cookie...")
+                cookies = self.parse_cookie_string(self.cookie)
+                await context.add_cookies(cookies)
                 
                 # 创建新页面
                 page = await context.new_page()
@@ -206,12 +179,8 @@ class TikHubCheckin:
                     
                     # 检查是否需要登录
                     if 'login' in page.url.lower():
-                        print("⚠️ 需要重新登录")
-                        if self.email and self.password:
-                            await self._login_with_credentials(context)
-                            await page.goto(f'{self.base_url}/zh-hans/users/overview', wait_until='networkidle', timeout=60000)
-                        else:
-                            return {"success": False, "message": "Cookie失效且未提供账号密码"}
+                        print("❌ Cookie已失效，请更新Cookie")
+                        return {"success": False, "message": "Cookie已失效，请重新获取Cookie"}
                     
                     # 关闭弹窗
                     print("[步骤 4] 检查并关闭可能的弹窗...")
@@ -241,12 +210,6 @@ class TikHubCheckin:
                         else:
                             print("⚠️ 未找到签到按钮")
                     
-                    # 保存Cookie
-                    cookies = await context.cookies()
-                    with open(self.cookie_file, 'w', encoding='utf-8') as f:
-                        json.dump(cookies, f, ensure_ascii=False, indent=2)
-                    print(f"\n💾 Cookie已保存到: {self.cookie_file}")
-                    
                     # 保存签到记录
                     if self.signin_success:
                         self._save_checkin_record()
@@ -275,42 +238,6 @@ class TikHubCheckin:
             error_msg = f"签到过程发生错误: {str(e)}"
             print(f"❌ {error_msg}")
             return {"success": False, "message": error_msg}
-    
-    async def _login_with_credentials(self, context):
-        """使用账号密码登录"""
-        page = await context.new_page()
-        try:
-            print(f"🔐 使用账号 {self.email} 登录...")
-            
-            # 访问登录页面
-            await page.goto(f'{self.base_url}/zh-hans/users/login', wait_until='networkidle', timeout=60000)
-            await asyncio.sleep(2)
-            
-            # 填写表单
-            await page.fill('input[name="email"]', self.email)
-            await page.fill('input[name="password"]', self.password)
-            
-            # 点击登录按钮
-            await page.click('button[type="submit"]')
-            
-            # 等待登录完成
-            print("⏳ 等待登录完成...")
-            await asyncio.sleep(5)
-            
-            # 检查是否登录成功
-            if 'overview' in page.url or 'users' in page.url:
-                print("✅ 登录成功")
-                # 保存Cookie
-                cookies = await context.cookies()
-                with open(self.cookie_file, 'w', encoding='utf-8') as f:
-                    json.dump(cookies, f, ensure_ascii=False, indent=2)
-            else:
-                print("⚠️ 登录可能失败，请检查账号密码")
-                
-        except Exception as e:
-            print(f"❌ 登录过程出错: {e}")
-        finally:
-            await page.close()
     
     async def _close_popups(self, page):
         """关闭弹窗"""
@@ -478,7 +405,7 @@ class TikHubCheckin:
                 stats_text += "\n  · 今日首次签到 🆕"
             
             # 获取登录方式
-            login_method_icon = "🔑" if self.login_method == "账号密码" else "🔒"
+            login_method_icon = "🍪"
             login_method_text = f"{login_method_icon} 登录方式: {self.login_method}"
             
             # 随机选择一条激励语
@@ -533,14 +460,14 @@ class TikHubCheckin:
                 points_text = f"💎 本次获得: +{self.points_gained} 积分\n"
             
             # 构建签到方式显示
-            checkin_method_icon = "🍪" if "Cookie" in self.checkin_method else "✅"
+            checkin_method_icon = "🍪"
             
             # 构建美化的消息
             formatted_message = f"""{header_icon} *TikHub每日签到* {header_icon}
 
 📅 日期: {date_str} ({weekday})
 🕒 时间: {time_str}
-👤 账号: {self.email or '使用Cookie'}
+👤 账号: Cookie用户
 {icon} 状态: {status}
 {login_method_text}
 {checkin_method_icon} 签到方式: {self.checkin_method}
@@ -593,8 +520,6 @@ def main():
         print("-" * 80)
     
     # 从环境变量获取配置
-    email = os.environ.get("TIKHUB_EMAIL")
-    password = os.environ.get("TIKHUB_PASSWORD")
     cookie = os.environ.get("TIKHUB_COOKIE")
     
     # 获取Telegram配置
@@ -602,32 +527,27 @@ def main():
     tg_chat_id = os.environ.get("TG_CHAT_ID")
     
     # 检查配置
-    if not email and not cookie:
-        print("❌ 错误: 未设置登录配置")
-        print("\n请选择以下方式之一进行配置：")
-        print("\n方式一（推荐）：使用账号密码登录")
+    if not cookie:
+        print("❌ 错误: 未设置 Cookie")
+        print("\n请配置 TIKHUB_COOKIE：")
         print("  在 GitHub Secrets 中添加：")
-        print("  - TIKHUB_EMAIL: 你的邮箱")
-        print("  - TIKHUB_PASSWORD: 你的密码")
-        print("\n方式二：使用 Cookie")
-        print("  在 GitHub Secrets 中添加：")
-        print("  - TIKHUB_COOKIE: 你的 Cookie")
+        print("  - TIKHUB_COOKIE: 你的 Cookie 字符串")
+        print("\n如何获取 Cookie：")
+        print("  1. 在浏览器中登录 TikHub")
+        print("  2. 打开开发者工具（F12）")
+        print("  3. 切换到 Network 标签")
+        print("  4. 刷新页面")
+        print("  5. 找到任意请求，查看 Request Headers")
+        print("  6. 复制 Cookie 字段的完整值")
         print("\n可选：Telegram通知")
         print("  - TG_BOT_TOKEN: Telegram Bot Token")
         print("  - TG_CHAT_ID: Telegram Chat ID")
         sys.exit(1)
     
     # 创建签到实例
-    if email and password:
-        print(f"📝 账号配置: {email}")
-        checkin = TikHubCheckin(email=email, password=password)
-    elif cookie:
-        print(f"📝 使用 Cookie 登录")
-        print(f"🍪 Cookie 长度: {len(cookie)}")
-        checkin = TikHubCheckin(cookie=cookie)
-    else:
-        print("❌ 错误: 提供了邮箱但未提供密码")
-        sys.exit(1)
+    print(f"📝 使用 Cookie 签到")
+    print(f"🍪 Cookie 长度: {len(cookie)}")
+    checkin = TikHubCheckin(cookie=cookie)
     
     # 执行签到
     result = asyncio.run(checkin.checkin())

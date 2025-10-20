@@ -6,10 +6,20 @@ TikHub 自动签到脚本
 """
 
 import asyncio
+import sys
+import io
+
+# 设置 Windows 控制台输出编码为 UTF-8
+if sys.platform == 'win32':
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+    except:
+        pass
+
 from playwright.async_api import async_playwright
 import json
 import os
-import sys
 import time
 import random
 import requests
@@ -174,13 +184,19 @@ class TikHubCheckin:
                 try:
                     # 访问概览页面
                     print("[步骤 3] 访问用户概览页面...")
-                    await page.goto(f'{self.base_url}/zh-hans/users/overview', wait_until='networkidle', timeout=60000)
-                    await asyncio.sleep(2)
+                    await page.goto(f'{self.base_url}/zh-hans/users/overview', wait_until='domcontentloaded', timeout=30000)
+                    print("   页面已加载，等待内容渲染...")
+                    await asyncio.sleep(3)
                     
                     # 检查是否需要登录
+                    print(f"   当前URL: {page.url}")
                     if 'login' in page.url.lower():
                         print("❌ Cookie已失效，请更新Cookie")
                         return {"success": False, "message": "Cookie已失效，请重新获取Cookie"}
+                    
+                    # 检查页面标题
+                    page_title = await page.title()
+                    print(f"   页面标题: {page_title}")
                     
                     # 关闭弹窗
                     print("[步骤 4] 检查并关闭可能的弹窗...")
@@ -204,11 +220,29 @@ class TikHubCheckin:
                             print("[步骤 7] 点击签到按钮...")
                             await signin_button.click()
                             
-                            # 等待签到完成
+                            # 等待签到完成或验证码出现
                             print("⏳ 等待签到完成...")
-                            await asyncio.sleep(8)
+                            await asyncio.sleep(3)
+                            
+                            # 检查是否有验证码
+                            print("[步骤 8] 检查验证码...")
+                            captcha_handled = await self._handle_captcha(page)
+                            
+                            if captcha_handled:
+                                print("✅ 验证码已处理，等待签到结果...")
+                                await asyncio.sleep(5)
+                            else:
+                                # 没有验证码或无法处理，继续等待
+                                await asyncio.sleep(5)
                         else:
                             print("⚠️ 未找到签到按钮")
+                            # 保存调试截图
+                            try:
+                                screenshot_path = 'tikhub_debug.png'
+                                await page.screenshot(path=screenshot_path, full_page=True)
+                                print(f"📸 已保存调试截图: {screenshot_path}")
+                            except Exception as e:
+                                print(f"⚠️ 保存调试截图失败: {e}")
                     
                     # 保存签到记录
                     if self.signin_success:
@@ -241,53 +275,208 @@ class TikHubCheckin:
     
     async def _close_popups(self, page):
         """关闭弹窗"""
+        # 多种弹窗关闭选择器
         close_selectors = [
-            'button[aria-label="Close"]',
-            'button[class*="close"]',
+            'button:has-text("不再显示")',  # "重磅好消息"弹窗
+            'button:has-text("稍后提醒我")',
             'button:has-text("不再提醒")',
             'button:has-text("关闭")',
-            '.modal-close'
+            'button[aria-label="Close"]',
+            'button[class*="close"]',
+            '.modal-close',
+            'button:has-text("我知道了")',
+            'button:has-text("确定")',
+            # 尝试找 X 按钮
+            'button svg[class*="close"]',
+            '[class*="modal"] button[class*="close"]',
         ]
         
+        popup_closed = False
         for selector in close_selectors:
             try:
                 close_btn = await page.wait_for_selector(selector, timeout=2000)
                 if close_btn and await close_btn.is_visible():
+                    print(f"   找到弹窗关闭按钮: {selector}")
                     await close_btn.click()
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(1.5)
                     print("✅ 已关闭弹窗")
+                    popup_closed = True
                     break
             except:
                 continue
         
         # 尝试ESC键
-        try:
-            await page.keyboard.press('Escape')
-            await asyncio.sleep(0.5)
-        except:
-            pass
+        if not popup_closed:
+            try:
+                await page.keyboard.press('Escape')
+                await asyncio.sleep(0.5)
+                print("✅ 已尝试使用 ESC 键关闭弹窗")
+            except:
+                pass
     
     async def _find_signin_button(self, page):
         """查找签到按钮"""
+        # 先保存页面HTML用于调试（仅在GitHub Actions中）
+        is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+        if is_github_actions:
+            try:
+                html_content = await page.content()
+                # 查找是否有"签到"相关文本
+                if '签到' in html_content:
+                    print("   ✓ 页面HTML中包含'签到'文字")
+                    # 提取包含"签到"的部分内容（用于调试）
+                    import re
+                    matches = re.findall(r'.{0,50}签到.{0,50}', html_content)
+                    if matches:
+                        print(f"   找到{len(matches)}处'签到'文字:")
+                        for i, match in enumerate(matches[:3]):  # 只显示前3个
+                            print(f"     {i+1}. {match.strip()}")
+                else:
+                    print("   ✗ 页面HTML中未找到'签到'文字")
+            except Exception as e:
+                print(f"   调试信息获取失败: {e}")
+        
         selectors = [
+            # TikHub 特定的签到按钮选择器
+            'div[name="checkedin"]',
+            'div[data-tip="点击签到"]',
+            # 备用通用选择器
             'button:has-text("签到")',
             'a:has-text("签到")',
+            '[role="button"]:has-text("签到")',
             'button:has-text("Check in")',
             'button:has-text("每日签到")',
+            'a:has-text("每日签到")',
             '#checkin-button',
-            '.checkin-btn'
+            '.checkin-btn',
         ]
         
+        print("   尝试查找签到按钮...")
         for selector in selectors:
             try:
-                button = await page.wait_for_selector(selector, timeout=2000)
-                if button and await button.is_visible():
-                    print(f"✅ 找到签到按钮: {selector}")
-                    return button
-            except:
+                elements = await page.query_selector_all(selector)
+                for element in elements:
+                    if await element.is_visible():
+                        text = await element.inner_text()
+                        text = text.strip()
+                        # 只匹配文本较短的元素（避免匹配整个页面容器）
+                        if len(text) <= 20 and ('签到' in text or 'check' in text.lower()):
+                            print(f"✅ 找到签到按钮: {selector} (文本: {text})")
+                            return element
+            except Exception as e:
                 continue
         
+        # 最后尝试：通过页面内容查找所有包含"签到"的可点击元素
+        print("   使用备用方法查找...")
+        try:
+            # 查找所有可能的可点击元素
+            all_elements = await page.query_selector_all('button, a, [role="button"], div[onclick], [class*="button"], [class*="btn"]')
+            for element in all_elements:
+                try:
+                    if await element.is_visible():
+                        text = await element.inner_text()
+                        # 只匹配文本简短且包含"签到"的元素
+                        if text and len(text.strip()) <= 20 and '签到' in text:
+                            print(f"✅ 找到签到元素 (文本: {text.strip()})")
+                            return element
+                except:
+                    continue
+        except:
+            pass
+        
+        # 最终尝试：直接通过 XPath 查找
+        print("   使用 XPath 查找...")
+        try:
+            xpath_selectors = [
+                "//button[contains(text(), '签到')]",
+                "//a[contains(text(), '签到')]",
+                "//*[contains(@class, 'button') and contains(text(), '签到')]",
+                "//*[contains(@class, 'btn') and contains(text(), '签到')]"
+            ]
+            for xpath in xpath_selectors:
+                try:
+                    element = await page.query_selector(f"xpath={xpath}")
+                    if element and await element.is_visible():
+                        text = await element.inner_text()
+                        if len(text.strip()) <= 20:
+                            print(f"✅ 通过 XPath 找到签到按钮 (文本: {text.strip()})")
+                            return element
+                except:
+                    continue
+        except:
+            pass
+        
         return None
+    
+    async def _handle_captcha(self, page):
+        """处理验证码"""
+        try:
+            # 检查是否有验证码iframe或弹窗
+            captcha_selectors = [
+                'iframe[src*="recaptcha"]',
+                'iframe[src*="captcha"]',
+                '[class*="captcha"]',
+                '[id*="captcha"]',
+                '[class*="verify"]',
+                '[id*="verify"]',
+            ]
+            
+            for selector in captcha_selectors:
+                try:
+                    captcha_element = await page.query_selector(selector)
+                    if captcha_element and await captcha_element.is_visible():
+                        print(f"   检测到验证码元素: {selector}")
+                        
+                        # 如果是 reCAPTCHA
+                        if 'recaptcha' in selector:
+                            print("   检测到 reCAPTCHA，等待用户手动完成...")
+                            # 在无头模式下无法处理 reCAPTCHA
+                            is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
+                            if is_github_actions:
+                                print("   ⚠️ 无头模式无法自动处理 reCAPTCHA")
+                                return False
+                            else:
+                                # 本地有头模式，等待用户手动完成
+                                print("   请在浏览器中手动完成验证码...")
+                                await asyncio.sleep(30)  # 给用户30秒时间
+                                return True
+                        
+                        # 尝试简单的点击操作
+                        print("   尝试点击验证码...")
+                        await captcha_element.click()
+                        await asyncio.sleep(2)
+                        return True
+                        
+                except:
+                    continue
+            
+            # 检查页面文本中是否提到验证码
+            page_content = await page.content()
+            if '验证码' in page_content or 'captcha' in page_content.lower() or 'verify' in page_content.lower():
+                print("   ⚠️ 页面提示需要验证码，但未找到验证码元素")
+                print("   可能的原因：")
+                print("     1. 验证码在弹窗中但还未加载")
+                print("     2. 使用了隐藏的验证码（如 hCaptcha）")
+                print("     3. 需要更长的等待时间")
+                
+                # 再等待一下看验证码是否出现
+                await asyncio.sleep(3)
+                
+                # 再次尝试查找
+                for selector in captcha_selectors:
+                    try:
+                        captcha_element = await page.query_selector(selector)
+                        if captcha_element and await captcha_element.is_visible():
+                            print(f"   延迟检测到验证码: {selector}")
+                            return False
+                    except:
+                        continue
+            
+            return False
+            
+        except Exception as e:
+            print(f"   验证码处理出错: {e}")
+            return False
     
     def _save_checkin_record(self):
         """保存签到记录"""
@@ -522,18 +711,42 @@ def main():
     # 从环境变量获取配置
     cookie = os.environ.get("TIKHUB_COOKIE")
     
+    # 调试信息：检查环境变量
+    print("🔍 环境变量检查:")
+    print(f"  - TIKHUB_COOKIE 是否存在: {'是' if 'TIKHUB_COOKIE' in os.environ else '否'}")
+    
+    # 打印所有环境变量名称（用于调试）
+    env_keys = [k for k in os.environ.keys() if 'TIKHUB' in k.upper() or 'TG_' in k.upper()]
+    if env_keys:
+        print(f"  - 找到的相关环境变量: {', '.join(env_keys)}")
+    else:
+        print(f"  - 未找到任何相关环境变量（包含 TIKHUB 或 TG_）")
+    
+    if cookie:
+        print(f"  - Cookie 原始长度: {len(cookie)}")
+        print(f"  - Cookie 去空格后长度: {len(cookie.strip())}")
+        print(f"  - Cookie 前20个字符: {cookie[:20]}...")
+        print(f"  - Cookie 是否包含 sessionid: {'是' if 'sessionid' in cookie else '否'}")
+        print(f"  - Cookie 是否包含 csrftoken: {'是' if 'csrftoken' in cookie else '否'}")
+        # 去除首尾空格和换行符
+        cookie = cookie.strip()
+    else:
+        print(f"  - Cookie 值为: {repr(cookie)}")
+        print(f"  - Cookie 的类型: {type(cookie)}")
+    
     # 获取Telegram配置
     tg_bot_token = os.environ.get("TG_BOT_TOKEN")
     tg_chat_id = os.environ.get("TG_CHAT_ID")
     
-    # 检查配置
-    if not cookie:
-        print("❌ 错误: 未设置 Cookie")
-        print("\n请配置 TIKHUB_COOKIE：")
-        print("  在 GitHub Secrets 中添加：")
-        print("  - TIKHUB_COOKIE: 你的 Cookie 字符串")
+    # 检查配置（确保不为空且去空格后仍有内容）
+    if not cookie or len(cookie) == 0:
+        print("❌ 错误: 未设置 Cookie 或 Cookie 为空")
+        print("\n请检查以下配置：")
+        print("  1. 确认在 GitHub Settings -> Secrets and variables -> Actions 中添加了 TIKHUB_COOKIE")
+        print("  2. 确认 Secret 名称拼写正确（区分大小写）：TIKHUB_COOKIE")
+        print("  3. 确认 Secret 值不为空，且不只包含空格")
         print("\n如何获取 Cookie：")
-        print("  1. 在浏览器中登录 TikHub")
+        print("  1. 在浏览器中登录 TikHub (https://user.tikhub.io)")
         print("  2. 打开开发者工具（F12）")
         print("  3. 切换到 Network 标签")
         print("  4. 刷新页面")
@@ -542,6 +755,7 @@ def main():
         print("\n可选：Telegram通知")
         print("  - TG_BOT_TOKEN: Telegram Bot Token")
         print("  - TG_CHAT_ID: Telegram Chat ID")
+        print("\n提示：确保 Cookie 值包含 session_id 或类似的认证信息")
         sys.exit(1)
     
     # 创建签到实例

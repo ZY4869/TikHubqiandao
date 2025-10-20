@@ -95,15 +95,69 @@ class TikHubCheckin:
                         '--no-sandbox',
                         '--disable-setuid-sandbox',
                         '--disable-dev-shm-usage',
-                        '--disable-gpu'
+                        '--disable-gpu',
+                        # 额外的反检测参数
+                        '--disable-web-security',
+                        '--disable-features=IsolateOrigins,site-per-process',
+                        '--allow-running-insecure-content',
+                        '--disable-blink-features=AutomationControlled',
+                        '--excludeSwitches=enable-automation',
+                        '--disable-extensions',
                     ]
                 )
                 
-                # 创建浏览器上下文
+                # 创建浏览器上下文，添加更多真实浏览器特征
                 context = await browser.new_context(
                     viewport={'width': 1920, 'height': 1080},
-                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36'
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    locale='zh-CN',
+                    timezone_id='Asia/Shanghai',
+                    # 添加权限
+                    permissions=['geolocation', 'notifications'],
+                    # 添加额外的HTTP头
+                    extra_http_headers={
+                        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Connection': 'keep-alive',
+                        'Upgrade-Insecure-Requests': '1',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Sec-Fetch-User': '?1',
+                        'Cache-Control': 'max-age=0',
+                    }
                 )
+                
+                # 注入 JavaScript 来隐藏 webdriver 特征
+                await context.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    
+                    // 覆盖 plugins
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    
+                    // 覆盖 languages
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['zh-CN', 'zh', 'en']
+                    });
+                    
+                    // Chrome 特征
+                    window.chrome = {
+                        runtime: {}
+                    };
+                    
+                    // Permissions
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                """)
                 
                 # 使用提供的Cookie
                 print("[步骤 2] 注入Cookie...")
@@ -217,7 +271,28 @@ class TikHubCheckin:
                         signin_button = await self._find_signin_button(page)
                         
                         if signin_button:
-                            print("[步骤 7] 点击签到按钮...")
+                            # 模拟人类行为 - 鼠标移动
+                            print("[步骤 7] 模拟人类行为...")
+                            try:
+                                # 滚动页面
+                                await page.evaluate("window.scrollBy(0, 100)")
+                                await asyncio.sleep(0.5)
+                                await page.evaluate("window.scrollBy(0, -50)")
+                                await asyncio.sleep(0.3)
+                                
+                                # 获取按钮位置并移动鼠标
+                                box = await signin_button.bounding_box()
+                                if box:
+                                    # 先移动到按钮附近
+                                    await page.mouse.move(box['x'] + box['width'] / 2 - 50, box['y'] + box['height'] / 2)
+                                    await asyncio.sleep(0.2)
+                                    # 再移动到按钮上
+                                    await page.mouse.move(box['x'] + box['width'] / 2, box['y'] + box['height'] / 2)
+                                    await asyncio.sleep(0.3)
+                            except Exception as e:
+                                print(f"   ⚠️ 模拟人类行为失败: {e}")
+                            
+                            print("[步骤 8] 点击签到按钮...")
                             await signin_button.click()
                             
                             # 等待签到完成或验证码出现
@@ -225,7 +300,7 @@ class TikHubCheckin:
                             await asyncio.sleep(3)
                             
                             # 检查是否有验证码
-                            print("[步骤 8] 检查验证码...")
+                            print("[步骤 9] 检查验证码...")
                             captcha_handled = await self._handle_captcha(page)
                             
                             if captcha_handled:
@@ -429,15 +504,29 @@ class TikHubCheckin:
                         
                         # 如果是 reCAPTCHA
                         if 'recaptcha' in selector:
-                            print("   检测到 reCAPTCHA，等待用户手动完成...")
+                            print("   检测到 reCAPTCHA")
                             # 在无头模式下无法处理 reCAPTCHA
                             is_github_actions = os.environ.get('GITHUB_ACTIONS') == 'true'
                             if is_github_actions:
                                 print("   ⚠️ 无头模式无法自动处理 reCAPTCHA")
+                                print("\n" + "="*60)
+                                print("💡 验证码解决方案")
+                                print("="*60)
+                                print("由于 TikHub 启用了 reCAPTCHA 验证，GitHub Actions 无法自动完成签到。")
+                                print("\n建议解决方案：")
+                                print("1. 本地运行脚本（有头模式可手动完成验证码）")
+                                print("2. 使用第三方验证码识别服务（需要付费，不推荐）")
+                                print("3. 等待网站取消验证码要求（概率较低）")
+                                print("4. 降低签到频率，减少被识别为机器人的概率")
+                                print("\n当前策略：")
+                                print("- 已添加随机延迟（1-60秒）避免同一时间大量请求")
+                                print("- 已添加反检测代码隐藏自动化特征")
+                                print("- 已添加人类行为模拟（鼠标移动、滚动）")
+                                print("="*60 + "\n")
                                 return False
                             else:
                                 # 本地有头模式，等待用户手动完成
-                                print("   请在浏览器中手动完成验证码...")
+                                print("   💡 请在浏览器中手动完成验证码...")
                                 await asyncio.sleep(30)  # 给用户30秒时间
                                 return True
                         

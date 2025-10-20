@@ -31,11 +31,8 @@ jobs:
     
     - name: 执行签到
       env:
-        # TikHub 登录配置（二选一）
-        TIKHUB_EMAIL: ${{ secrets.TIKHUB_EMAIL }}
-        TIKHUB_PASSWORD: ${{ secrets.TIKHUB_PASSWORD }}
-        # 或者使用 Cookie
-        # TIKHUB_COOKIE: ${{ secrets.TIKHUB_COOKIE }}
+        # TikHub Cookie 配置
+        TIKHUB_COOKIE: ${{ secrets.TIKHUB_COOKIE }}
         
         # Telegram 通知配置（可选）
         TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
@@ -45,6 +42,9 @@ jobs:
         IS_AUTO_RUN: "true"
         GITHUB_ACTIONS: "true"
       run: |
+        echo "环境变量检查:"
+        echo "TIKHUB_COOKIE 是否存在: ${{ secrets.TIKHUB_COOKIE != '' }}"
+        echo "TIKHUB_COOKIE 长度: ${#TIKHUB_COOKIE}"
         python tikhub_signin_playwright.py
     
     - name: 上传签到记录

@@ -47,7 +47,7 @@ jobs:
         echo "TIKHUB_COOKIE 长度: ${#TIKHUB_COOKIE}"
         python tikhub_signin_playwright.py
     
-    - name: 上传签到记录
+    - name: 上传签到记录和调试信息
       if: always()
       uses: actions/upload-artifact@v4
       with:
@@ -55,5 +55,7 @@ jobs:
         path: |
           tikhub_checkin_record.json
           tikhub_cookies.json
+          tikhub_debug.png
+          tikhub_final.png
         retention-days: 30
 
